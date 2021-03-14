@@ -14,7 +14,7 @@ type TokenNamespace = string;
 type Token = string;
 type RefreshTokenId = string;
 
-type Payload = { [key: string]: string | number }
+type Payload = { [key: string]: string | number | boolean }
 
 type AuthorizationCallback = (username: string, password: string) => Promise<Payload | false>;
 type RevokeRefreshTokenCallback = (id: RefreshTokenId) => Promise<void>;
@@ -94,14 +94,13 @@ export class Autheno {
         this.assertAllPropertiesGiven();
         return async (request, response, next) => {
             const { username, password } = this.extractLoginCredentials(request);
-            const payload = await this.authorizeFn(username as string, password as string);
+            const payload = await this.authorizeFn(username, password);
             if (!payload) {
                 // TODO: Add better error handling
-                throw "username or password wrong";
+                this.sendError(response, new PermissionDeniedError("username or password wrong"));
+                return;
             }
-            const accessToken = this.createAccessToken(payload);
-            const refreshToken = this.createRefreshToken(payload);
-            response.json({ accessToken, refreshToken });
+            response.json(await this.createTokens(payload));
             next();
         };
     }
@@ -110,13 +109,9 @@ export class Autheno {
         this.assertAllPropertiesGiven();
         return async (request, response, next) => {
             const refreshToken = this.extractRefreshToken(request) as string;
-            this.verifyAccessToken(refreshToken)
+            this.verifyRefreshToken(refreshToken)
                 .then(async (decoded: any) => {
-                    const id = decoded.tokenId as RefreshTokenId;
-                    if (!id) {
-                        this.sendError(response, new BadRequestError("Please provide a refresh token"));
-                        return;
-                    }
+                    const id = decoded.tokenId;
                     if (!await this.checkRefreshTokenFn(id)) {
                         this.sendError(response, new PermissionDeniedError("Provided refresh token got revoked"));
                         return;
@@ -126,22 +121,33 @@ export class Autheno {
                     // TODO: Maybe do a cleanup, update some values
                     const newPayload = Object.assign({}, decoded);
                     delete newPayload.tokenId;
+                    delete newPayload.isRefreshToken;
 
                     const newTokens = await this.createTokens(newPayload);
                     response.json(newTokens);
+                    next();
                 })
-                .catch(() => this.sendError(response, new PermissionDeniedError("Token couldn't be verified")));
+                .catch((e: AuthenoError) => this.sendError(response, e));
         };
     }
 
     expressRevokeRefreshToken(): express.RequestHandler {
         this.assertAllPropertiesGiven();
-        return (request, response, next) => {
-            
+        return async (request, response, next) => {
+            return this.verifyRefreshToken(this.extractRefreshToken(request))
+                .then(async decoded => {
+                    const id = decoded.tokenId;
+                    await this.revokeRefreshTokenFn(id);
+                    next();
+                })
+                .catch(e => this.sendError(response, e));
         };
     }
 
-    protected sendError(response: express.Response, error: AuthenoError) {
+    protected sendError(response: express.Response, error: AuthenoError): void {
+        if (!(error instanceof AuthenoError)) {
+            throw error;
+        }
         response.status(error.httpStatus).json({
             errors: [ error.message ]
         });
@@ -157,38 +163,52 @@ export class Autheno {
         return token;
     }
 
-    protected async createAccessToken(payload: Payload) {
+    protected async createAccessToken(payload: Payload): Promise<Token> {
         return await this.createToken(payload, this.accessTokenExpiresIn);
     }
 
-    protected async createRefreshToken(payload: Payload) {
+    protected async createRefreshToken(payload: Payload): Promise<Token> {
         const refreshTokenId = this.refreshTokenIdStream.next().value as string;
         const token = await this.createToken({
             ...payload,
-            tokenId: refreshTokenId
+            tokenId: refreshTokenId,
+            isRefreshToken: true
         }, this.accessTokenExpiresIn);
         return token;
     }
 
     protected async createTokens(payload: Payload) {
-        const accessToken = this.createAccessToken(payload);
-        const refreshToken = this.createRefreshToken(payload);
+        const accessToken = await this.createAccessToken(payload);
+        const refreshToken = await this.createRefreshToken(payload);
         return { accessToken, refreshToken };
     }
 
-    protected async verifyAccessToken(token: Token) {
+    protected async verifyAccessToken(token: Token): Promise<any> {
         return jwt.verify(token, await this.publicKey, { algorithms: [this.keyAlgorithm] });
+    }
+
+    protected async verifyRefreshToken(token: Token): Promise<any> {
+        try { 
+            const decoded: any = jwt.verify(token, await this.publicKey, { algorithms: [this.keyAlgorithm] });
+            const id = decoded.tokenId as RefreshTokenId;
+            if (!id) {
+                throw new BadRequestError("Please provide a refresh token");
+            }
+            return decoded;
+        } catch(e) {
+            throw new PermissionDeniedError("Token couldn't be verified");
+        }
     }
 
     // Extraction
     protected extractLoginCredentials(request: express.Request) {
-        const { username, password } = request.query;
+        const { username, password } = request.query as { username: string, password: string };
         return { username, password };
     }
 
-    protected extractRefreshToken(request: express.Request) {
-        const { request_token: requestToken } = request.query;
-        return requestToken;
+    protected extractRefreshToken(request: express.Request): Token {
+        const { refresh_token: requestToken } = request.query;
+        return requestToken as string;
     }
 
     // Checker

@@ -1,4 +1,5 @@
 import * as express from 'express';
+import path = require('path');
 import { Autheno } from '..';
 
 const app = express();
@@ -8,8 +9,8 @@ const auth = new Autheno();
 
 auth.keys({
     algorithm: "RS256",
-    privateKey: "",
-    publicKey: ""
+    privateKey: path.join(__dirname, "./keys/jwtRS256.key"),
+    publicKey:  path.join(__dirname, "./keys/jwtRS256.key.pub")
 });
 
 auth.tokenExpiration({
@@ -46,4 +47,6 @@ auth.checkRefreshToken(async token => {
 app.use("/login", auth.expressTokens());
 app.use("/refresh_token", auth.expressRefreshToken());
 app.use("/revoke_token", auth.expressRevokeRefreshToken());
+
+app.listen(8080, () => console.log("listening on port 8080"));
 
