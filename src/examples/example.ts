@@ -29,15 +29,16 @@ auth.authorize(async (username: string, password: string) => {
     return false;
 });
 
-auth.addRefreshToken(token => {
-
+auth.addRefreshToken(async token => {
+    // handle refresh token added
+    // TODO: A connection to the user is needed
 });
 
-auth.revokeRefreshToken(token => {
+auth.revokeRefreshToken(async token => {
     // push to blacklist
 })
 
-auth.checkRefreshToken(token => {
+auth.checkRefreshToken(async token => {
     // check blacklist
     return true;
 });
