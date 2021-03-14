@@ -1,14 +1,13 @@
 import * as express from 'express';
-const Autheno: any = null;
+import { Autheno } from '..';
 
 const app = express();
 
 const auth = new Autheno();
 
-app.use()
 
 auth.keys({
-    algorithm: "RSA256",
+    algorithm: "RS256",
     privateKey: "",
     publicKey: ""
 });
@@ -30,16 +29,20 @@ auth.authorize(async (username: string, password: string) => {
     return false;
 });
 
-auth.revokeRefreshToken((token: string) => {
+auth.addRefreshToken(token => {
+
+});
+
+auth.revokeRefreshToken(token => {
     // push to blacklist
 })
 
-auth.checkRefreshToken((token: string) => {
+auth.checkRefreshToken(token => {
     // check blacklist
     return true;
 });
 
-app.use("/access_token", auth.expressAccessToken());
+app.use("/login", auth.expressTokens());
 app.use("/refresh_token", auth.expressRefreshToken());
 app.use("/revoke_token", auth.expressRevokeRefreshToken());
 
