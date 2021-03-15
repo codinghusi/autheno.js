@@ -45,7 +45,7 @@ interface TokenExpirationParams {
 
 export class Autheno {
     private privateKey: Promise<Key>;
-    private publicKey: Promise<Key>;
+    public publicKey: Promise<Key>;
     private keyAlgorithm: KeyAlgorithm;
 
     private accessTokenExpiresIn: ExpiresIn;
@@ -159,7 +159,7 @@ export class Autheno {
             throw error;
         }
         response.status(error.httpStatus).json({
-            errors: [ error.message ]
+            error: error.message
         });
     }
 
