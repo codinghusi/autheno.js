@@ -30,16 +30,16 @@ auth.authorize(async (username: string, password: string) => {
     return false;
 });
 
-auth.addRefreshToken(async token => {
+auth.addRefreshToken(async (id, token) => {
     // handle refresh token added
     // TODO: A connection to the user is needed
 });
 
-auth.revokeRefreshToken(async token => {
+auth.revokeRefreshToken(async (id, token) => {
     // push to blacklist
 })
 
-auth.checkRefreshToken(async token => {
+auth.checkRefreshToken(async (id, token) => {
     // check blacklist
     return true;
 });

@@ -14,12 +14,18 @@ type TokenNamespace = string;
 type Token = string;
 type RefreshTokenId = string;
 
-type Payload = { [key: string]: string | number | boolean }
+type UserPayload = {
+    username: string;
+    role: string;
+    extra?: any;
+}
 
-type AuthorizationCallback = (username: string, password: string) => Promise<Payload | false>;
-type RevokeRefreshTokenCallback = (id: RefreshTokenId) => Promise<void>;
-type AddRefreshTokenCallback = (id: RefreshTokenId) => Promise<void>;
-type CheckRefreshTokenCallback = (token: Token) => Promise<boolean>;
+type JWTPayload = any;
+
+type AuthorizationCallback = (username: string, password: string) => Promise<UserPayload | false>;
+type RevokeRefreshTokenCallback = (id: RefreshTokenId, payload: UserPayload) => Promise<void>;
+type AddRefreshTokenCallback = (id: RefreshTokenId, payload: UserPayload) => Promise<void>;
+type CheckRefreshTokenCallback = (id: RefreshTokenId, payload: UserPayload) => Promise<boolean>;
 
 interface KeysParams {
     privateKey: Key;
@@ -96,11 +102,12 @@ export class Autheno {
             const { username, password } = this.extractLoginCredentials(request);
             const payload = await this.authorizeFn(username, password);
             if (!payload) {
-                // TODO: Add better error handling
                 this.sendError(response, new PermissionDeniedError("username or password wrong"));
                 return;
             }
-            response.json(await this.createTokens(payload));
+            const tokens = await this.createTokens(payload);
+            const { refreshToken } = tokens;
+            response.json();
             next();
         };
     }
@@ -111,19 +118,23 @@ export class Autheno {
             const refreshToken = this.extractRefreshToken(request) as string;
             this.verifyRefreshToken(refreshToken)
                 .then(async (decoded: any) => {
-                    const id = decoded.tokenId;
-                    if (!await this.checkRefreshTokenFn(id)) {
+                    // Generate the new payload
+                    // TODO: Maybe do a cleanup, update some values
+                    const oldPayload = this.extractUserPayload(decoded);
+                    const newPayload = oldPayload;
+
+                    const oldRefreshTokenId = decoded.tokenId;
+                    if (!await this.checkRefreshTokenFn(oldRefreshTokenId, newPayload)) {
                         this.sendError(response, new PermissionDeniedError("Provided refresh token got revoked"));
                         return;
-                    }
+                    }                    
 
-                    // Generate the payload
-                    // TODO: Maybe do a cleanup, update some values
-                    const newPayload = Object.assign({}, decoded);
-                    delete newPayload.tokenId;
-                    delete newPayload.isRefreshToken;
+                    const newRefreshTokenId = this.nextRefreshTokenId();
+                    const newTokens = await this.createTokens(newPayload, newRefreshTokenId);
 
-                    const newTokens = await this.createTokens(newPayload);
+                    this.revokeRefreshTokenFn(oldRefreshTokenId, oldPayload);
+                    this.addRefreshTokenFn(newRefreshTokenId, newPayload);
+
                     response.json(newTokens);
                     next();
                 })
@@ -137,7 +148,8 @@ export class Autheno {
             return this.verifyRefreshToken(this.extractRefreshToken(request))
                 .then(async decoded => {
                     const id = decoded.tokenId;
-                    await this.revokeRefreshTokenFn(id);
+                    const payload = this.extractUserPayload(decoded)
+                    await this.revokeRefreshTokenFn(id, payload);
                     next();
                 })
                 .catch(e => this.sendError(response, e));
@@ -154,32 +166,42 @@ export class Autheno {
     }
 
     // JWT
-    protected async createToken(payload: Payload, expiresIn: ExpiresIn) {
+    protected async createToken(payload: JWTPayload, expiresIn: ExpiresIn) {
         const privateKey = await this.privateKey;
-        const token = jwt.sign(payload, privateKey, {
-            algorithm: this.keyAlgorithm,
-            expiresIn
-        });
+        const token = jwt.sign(
+            {
+                payload,
+                namespace: this.jwtNamespace,
+            }, 
+            privateKey,
+            {
+                algorithm: this.keyAlgorithm,
+                expiresIn
+            }
+        );
         return token;
     }
 
-    protected async createAccessToken(payload: Payload): Promise<Token> {
+    protected async createAccessToken(payload: UserPayload): Promise<Token> {
         return await this.createToken(payload, this.accessTokenExpiresIn);
     }
 
-    protected async createRefreshToken(payload: Payload): Promise<Token> {
-        const refreshTokenId = this.refreshTokenIdStream.next().value as string;
+    protected nextRefreshTokenId(): RefreshTokenId {
+        return this.refreshTokenIdStream.next().value as string;
+    }
+
+    protected async createRefreshToken(payload: UserPayload, refreshTokenId?: RefreshTokenId): Promise<Token> {
         const token = await this.createToken({
             ...payload,
-            tokenId: refreshTokenId,
+            tokenId: refreshTokenId ?? this.nextRefreshTokenId(),
             isRefreshToken: true
         }, this.accessTokenExpiresIn);
         return token;
     }
 
-    protected async createTokens(payload: Payload) {
+    protected async createTokens(payload: UserPayload, refreshTokenId?: RefreshTokenId) {
         const accessToken = await this.createAccessToken(payload);
-        const refreshToken = await this.createRefreshToken(payload);
+        const refreshToken = await this.createRefreshToken(payload, refreshTokenId);
         return { accessToken, refreshToken };
     }
 
@@ -209,6 +231,14 @@ export class Autheno {
     protected extractRefreshToken(request: express.Request): Token {
         const { refresh_token: requestToken } = request.query;
         return requestToken as string;
+    }
+
+    protected extractUserPayload(payload: JWTPayload): UserPayload {
+        return {
+            username: payload.username,
+            role: payload.role,
+            extra: payload.extra
+        };
     }
 
     // Checker
