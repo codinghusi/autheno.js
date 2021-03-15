@@ -1,11 +1,15 @@
 import * as express from 'express';
 import path = require('path');
 import { Autheno } from '..';
+import { User } from '../user-storage/user';
+import { UserStorage } from '../user-storage/user-storage';
 
 const app = express();
-
 const auth = new Autheno();
 
+const users = new UserStorage();
+users.addUser(new User("Gerrit", "1234", "admin"));
+users.addUser(new User("Joe",    "1234", "user"));
 
 auth.keys({
     algorithm: "RS256",
@@ -21,30 +25,29 @@ auth.tokenExpiration({
 auth.tokenNamespace("http://joe.com/jwt/claims");
 
 auth.authorize(async (username: string, password: string) => {
-    if (username === "Joe" && password === "1234") {
-        return {
-            username,
-            role: "user"
-        }
+    const user = users.loginUser(username, password);
+    if (!user) {
+        return false;
     }
-    return false;
+    return {
+        username: user.username,
+        role: user.role
+    }
 });
 
-auth.addRefreshToken(async (id, token) => {
+auth.addRefreshToken(async (id, payload) => {
     // handle refresh token added
-    // TODO: A connection to the user is needed
 });
 
-auth.revokeRefreshToken(async (id, token) => {
-    // push to blacklist
-})
-
-auth.checkRefreshToken(async (id, token) => {
-    // check blacklist
-    return true;
+auth.revokeRefreshToken(async (id, payload) => {
+    users.revokeTokenId(id);
 });
 
-app.use("/login", auth.expressTokens());
+auth.checkRefreshToken(async (id, payload) => {
+    return !users.isTokenIdBlacklisted(id);
+});
+
+app.use("/login", auth.expressLogin());
 app.use("/refresh_token", auth.expressRefreshToken());
 app.use("/revoke_token", auth.expressRevokeRefreshToken());
 
