@@ -225,7 +225,6 @@ export class Autheno {
                 const isRefreshToken = payload.isRefreshToken as boolean;
                 const refreshTokenId = payload.tokenId as RefreshTokenId;
                 if (!isRefreshToken || !refreshTokenId) {
-                    console.log("verifyRefreshToken", payload);
                     throw new BadRequestError("Please provide a refresh token");
                 }
 
