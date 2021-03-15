@@ -107,11 +107,11 @@ export class Autheno {
             const { username, password } = this.extractLoginCredentials(request);
             const payload = await this.authorizeFn(username, password);
             if (!payload) {
-                this.sendError(response, new PermissionDeniedError("username or password wrong"));
+                this.sendError(response, new PermissionDeniedError("Either username or password is incorrect"));
                 return;
             }
             const tokens = await this.createTokens(payload);
-            response.json(tokens);
+            this.sendData(response, tokens);
             next();
         };
     }
@@ -133,7 +133,7 @@ export class Autheno {
                     this.revokeRefreshTokenFn(oldRefreshTokenId, oldPayload);
                     this.addRefreshTokenFn(newRefreshTokenId, newPayload);
 
-                    response.json(newTokens);
+                    this.sendData(response, newTokens);
                     next();
                 })
                 .catch((e: AuthenoError) => this.sendError(response, e));
@@ -148,6 +148,7 @@ export class Autheno {
                     const id = decoded.tokenId;
                     const payload = this.extractAccessTokenPayload(decoded)
                     await this.revokeRefreshTokenFn(id, payload);
+                    this.sendData(response, {});
                     next();
                 })
                 .catch(e => this.sendError(response, e));
@@ -159,7 +160,15 @@ export class Autheno {
             throw error;
         }
         response.status(error.httpStatus).json({
+            status: "failed",
             error: error.message
+        });
+    }
+
+    protected sendData(response: express.Response, data: any) {
+        response.json({
+            status: "success",
+            data
         });
     }
 
