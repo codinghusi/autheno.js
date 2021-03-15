@@ -14,18 +14,23 @@ type TokenNamespace = string;
 type Token = string;
 type RefreshTokenId = string;
 
-type UserPayload = {
+interface AccessTokenPayload {
     username: string;
     role: string;
     extra?: any;
 }
 
+interface RefreshTokenPayload extends AccessTokenPayload {
+    tokenId: RefreshTokenId;
+    isRefreshToken: boolean;
+}
+
 type JWTPayload = any;
 
-type AuthorizationCallback = (username: string, password: string) => Promise<UserPayload | false>;
-type RevokeRefreshTokenCallback = (id: RefreshTokenId, payload: UserPayload) => Promise<void>;
-type AddRefreshTokenCallback = (id: RefreshTokenId, payload: UserPayload) => Promise<void>;
-type CheckRefreshTokenCallback = (id: RefreshTokenId, payload: UserPayload) => Promise<boolean>;
+type AuthorizationCallback = (username: string, password: string) => Promise<AccessTokenPayload | false>;
+type RevokeRefreshTokenCallback = (id: RefreshTokenId, payload: AccessTokenPayload) => Promise<void>;
+type AddRefreshTokenCallback = (id: RefreshTokenId, payload: AccessTokenPayload) => Promise<void>;
+type CheckRefreshTokenCallback = (id: RefreshTokenId, payload: AccessTokenPayload) => Promise<boolean>;
 
 interface KeysParams {
     privateKey: Key;
@@ -96,7 +101,7 @@ export class Autheno {
     }
 
     // Express Middlewares
-    expressTokens(): express.RequestHandler {
+    expressLogin(): express.RequestHandler {
         this.assertAllPropertiesGiven();
         return async (request, response, next) => {
             const { username, password } = this.extractLoginCredentials(request);
@@ -106,8 +111,7 @@ export class Autheno {
                 return;
             }
             const tokens = await this.createTokens(payload);
-            const { refreshToken } = tokens;
-            response.json();
+            response.json(tokens);
             next();
         };
     }
@@ -117,21 +121,15 @@ export class Autheno {
         return async (request, response, next) => {
             const refreshToken = this.extractRefreshToken(request) as string;
             this.verifyRefreshToken(refreshToken)
-                .then(async (decoded: any) => {
+                .then(async (payload: any) => {
                     // Generate the new payload
                     // TODO: Maybe do a cleanup, update some values
-                    const oldPayload = this.extractUserPayload(decoded);
+                    const oldPayload = payload;
                     const newPayload = oldPayload;
-
-                    const oldRefreshTokenId = decoded.tokenId;
-                    if (!await this.checkRefreshTokenFn(oldRefreshTokenId, newPayload)) {
-                        this.sendError(response, new PermissionDeniedError("Provided refresh token got revoked"));
-                        return;
-                    }                    
-
                     const newRefreshTokenId = this.nextRefreshTokenId();
                     const newTokens = await this.createTokens(newPayload, newRefreshTokenId);
 
+                    const oldRefreshTokenId = oldPayload.tokenId;
                     this.revokeRefreshTokenFn(oldRefreshTokenId, oldPayload);
                     this.addRefreshTokenFn(newRefreshTokenId, newPayload);
 
@@ -148,7 +146,7 @@ export class Autheno {
             return this.verifyRefreshToken(this.extractRefreshToken(request))
                 .then(async decoded => {
                     const id = decoded.tokenId;
-                    const payload = this.extractUserPayload(decoded)
+                    const payload = this.extractAccessTokenPayload(decoded)
                     await this.revokeRefreshTokenFn(id, payload);
                     next();
                 })
@@ -182,7 +180,7 @@ export class Autheno {
         return token;
     }
 
-    protected async createAccessToken(payload: UserPayload): Promise<Token> {
+    protected async createAccessToken(payload: AccessTokenPayload): Promise<Token> {
         return await this.createToken(payload, this.accessTokenExpiresIn);
     }
 
@@ -190,7 +188,7 @@ export class Autheno {
         return this.refreshTokenIdStream.next().value as string;
     }
 
-    protected async createRefreshToken(payload: UserPayload, refreshTokenId?: RefreshTokenId): Promise<Token> {
+    protected async createRefreshToken(payload: AccessTokenPayload, refreshTokenId?: RefreshTokenId): Promise<Token> {
         const token = await this.createToken({
             ...payload,
             tokenId: refreshTokenId ?? this.nextRefreshTokenId(),
@@ -199,7 +197,7 @@ export class Autheno {
         return token;
     }
 
-    protected async createTokens(payload: UserPayload, refreshTokenId?: RefreshTokenId) {
+    protected async createTokens(payload: AccessTokenPayload, refreshTokenId?: RefreshTokenId) {
         const accessToken = await this.createAccessToken(payload);
         const refreshToken = await this.createRefreshToken(payload, refreshTokenId);
         return { accessToken, refreshToken };
@@ -212,12 +210,27 @@ export class Autheno {
     protected async verifyRefreshToken(token: Token): Promise<any> {
         try { 
             const decoded: any = jwt.verify(token, await this.publicKey, { algorithms: [this.keyAlgorithm] });
-            const id = decoded.tokenId as RefreshTokenId;
-            if (!id) {
-                throw new BadRequestError("Please provide a refresh token");
+            const payload = this.extractRefreshTokenPayload(decoded);
+            if (payload) {
+                // Check if it is a refresh token
+                const isRefreshToken = payload.isRefreshToken as boolean;
+                const refreshTokenId = payload.tokenId as RefreshTokenId;
+                if (!isRefreshToken || !refreshTokenId) {
+                    console.log("verifyRefreshToken", payload);
+                    throw new BadRequestError("Please provide a refresh token");
+                }
+
+                // Check if it got revoked
+                if (!await this.checkRefreshTokenFn(refreshTokenId, payload)) {
+                    throw new PermissionDeniedError("Provided refresh token got revoked");
+                }      
+                return payload;
             }
-            return decoded;
+            throw new BadRequestError("Provided token in incorrect format");
         } catch(e) {
+            if (e instanceof AuthenoError) {
+                throw e;
+            }
             throw new PermissionDeniedError("Token couldn't be verified");
         }
     }
@@ -229,15 +242,33 @@ export class Autheno {
     }
 
     protected extractRefreshToken(request: express.Request): Token {
-        const { refresh_token: requestToken } = request.query;
-        return requestToken as string;
+        const refreshToken = request.query.token as string;
+        return refreshToken;
     }
 
-    protected extractUserPayload(payload: JWTPayload): UserPayload {
+    protected extractAccessTokenPayload(data: JWTPayload): AccessTokenPayload {
+        const payload = data.payload as AccessTokenPayload;
+        if (!payload) {
+            return null;
+        }
         return {
             username: payload.username,
             role: payload.role,
-            extra: payload.extra
+            extra: payload.extra ?? null
+        };
+    }
+
+    protected extractRefreshTokenPayload(data: JWTPayload): RefreshTokenPayload {
+        const payload = data.payload as RefreshTokenPayload;
+        if (!payload) {
+            return null;
+        }
+        return {
+            username: payload.username,
+            role: payload.role,
+            extra: payload.extra ?? null,
+            tokenId: payload.tokenId,
+            isRefreshToken: true
         };
     }
 
